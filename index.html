@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>발음 연습 앱</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *{box-sizing:border-box}body{margin:0;font-family:"Apple SD Gothic Neo","Nanum Gothic",sans-serif;background:#fdf4ff}
+    @keyframes spin{to{transform:rotate(360deg)}}.animate-spin{animation:spin 1s linear infinite}
+    @keyframes bounce2{0%,100%{transform:translateY(-18%)}50%{transform:translateY(0)}}.animate-bounce{animation:bounce2 .8s infinite}
+    @keyframes pulse2{0%,100%{opacity:1}50%{opacity:.5}}.animate-pulse{animation:pulse2 2s ease infinite}
+    @keyframes pop{0%{transform:scale(.8);opacity:0}100%{transform:scale(1);opacity:1}}.animate-pop{animation:pop .35s cubic-bezier(.34,1.56,.64,1) forwards}
+    @keyframes glow{0%,100%{box-shadow:0 0 8px 2px rgba(167,139,250,.4)}50%{box-shadow:0 0 24px 8px rgba(167,139,250,.8)}}.animate-glow{animation:glow 1.5s ease infinite}
+    @keyframes heartbeat{0%,100%{transform:scale(1)}25%{transform:scale(1.25)}50%{transform:scale(1)}75%{transform:scale(1.15)}}.animate-heartbeat{animation:heartbeat .6s ease}
+    @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-12px)}}.animate-float{animation:float 3s ease infinite}
+    @keyframes ripple{0%{transform:scale(.8);opacity:1}100%{transform:scale(2.4);opacity:0}}
+    .mic-ring{animation:ripple 1.4s ease-out infinite}.mic-ring2{animation:ripple 1.4s ease-out .5s infinite}
+    @media print{.no-print{display:none!important}body{background:white}.print-full{break-inside:avoid}}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState, useRef, useEffect} = React;
+
+// ── CONFIG ──────────────────────────────────────────────────────────────────
+const SUPABASE_URL  = "https://pqjuvuflinnrpemqcafl.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBxanV2dWZsaW5ucnBlbXFjYWZsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0NzAzMjQsImV4cCI6MjA5NDA0NjMyNH0.E4sJv1gM9TbWG-2o90aH8wJXZMLRY_uLQ9fgWARX1Ro";
+const SB_HEADS = {"Content-Type":"application/json","apikey":SUPABASE_ANON,"Authorization":"Bearer "+SUPABASE_ANON,"Prefer":"return=representation"};
+let GEMINI_API_KEY = "";
+function getGeminiUrl(){ return "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key="+GEMINI_API_KEY; }
+async function loadApiKey(){
+  try{
+    const r = await fetch(SUPABASE_URL+"/rest/v1/settings?key=eq.gemini_api_key",{headers:SB_HEADS});
+    if(!r.ok) return;
+    const rows = await r.json();
+    if(rows&&rows.length>0&&rows[0].value) GEMINI_API_KEY=rows[0].value;
+  }catch(e){console.warn("API키 로드 실패");}
+}
+async function callGemini(prompt){
+  const resp = await fetch(getGeminiUrl(),{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{temperature:0.7,maxOutputTokens:2048}})
+  });
+  if(!resp.ok){const e=await resp.json().catch(()=>({}));throw new Error(e.error?.message||"HTTP "+resp.status);}
+  const data=await resp.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim()||"";
+}
+function safeParseJSON(raw){
+  const clean=raw.replace(/```json|```/g,"").trim();
+  const m=clean.match(/\{[\s\S]*\}/);
+  const str=m?m[0]:clean;
+  const san=str.replace(/[\x00-\x1F\x7F]/g," ").replace(/,\s*([}\]])/g,"$1");
+  try{return JSON.parse(san);}catch(e){
+    const strict=san.replace(/'/g,'"').replace(/([{,]\s*)(\w+):/g,'$1"$2":');
+    return JSON.parse(strict);
+  }
+}
+
+// ── WORD BANKS ── (단음절 제거 - Chrome STT 인식 문제 방지)
+const WORDS = {
+  5: ["사과","바나나","고양이","강아지","나비","우유","아기","하늘","딸기","토마토","돼지","토끼","수박","기차","버스"],
+  6: ["자전거","코끼리","바람","구름","학교","친구","연필","우산","모자","물고기","사자","기차","수박","토끼","버스"],
+  7: ["파인애플","악어","도마뱀","자동차","헬리콥터","바이올린","개구리","무지개","컴퓨터","책가방","신발장","지우개","색연필","삼각형","피자"]
+};
+const EVAL_WORDS = {
+  5: ["나비","고양이","딸기","바나나","아기","사과","우유","토마토"],
+  6: ["자전거","코끼리","토끼","수박","연필","바람","친구","학교"],
+  7: ["파인애플","헬리콥터","바이올린","개구리","무지개","컴퓨터","악어","색연필"]
+};
+const WORD_EMOJIS = {
+  "사과":"🍎","바나나":"🍌","고양이":"🐱","강아지":"🐶","나비":"🦋","우유":"🥛","아기":"👶","하늘":"🌤️",
+  "딸기":"🍓","토마토":"🍅","돼지":"🐷","토끼":"🐰","수박":"🍉","기차":"🚂","버스":"🚌",
+  "자전거":"🚲","코끼리":"🐘","바람":"💨","구름":"☁️","학교":"🏫","친구":"👫","연필":"✏️",
+  "우산":"☂️","모자":"🎩","물고기":"🐟","사자":"🦁",
+  "파인애플":"🍍","악어":"🐊","도마뱀":"🦎","자동차":"🚗","헬리콥터":"🚁","바이올린":"🎻",
+  "개구리":"🐸","무지개":"🌈","컴퓨터":"💻","책가방":"🎒","신발장":"👟","지우개":"📝",
+  "색연필":"🖍️","삼각형":"🔺","피자":"🍕"
+};
+
+// ── SPEECH ───────────────────────────────────────────────────────────────────
+function speakKorean(text, rate){
+  rate = rate || 0.85;
+  return new Promise(function(resolve){
+    window.speechSynthesis.cancel();
+    var u = new SpeechSynthesisUtterance(text);
+    u.lang="ko-KR"; u.rate=rate; u.pitch=1.1; u.volume=1;
+    var voices=window.speechSynthesis.getVoices();
+    var kr=voices.find(function(v){return v.lang==="ko-KR"||v.lang==="ko";});
+    if(kr) u.voice=kr;
+    u.onend=function(){resolve();};
+    u.onerror=function(){resolve();};
+    window.speechSynthesis.speak(u);
+  });
+}
+async function speakSequence(texts, rate){
+  rate = rate || 0.85;
+  for(var i=0;i<texts.length;i++){
+    var t=texts[i];
+    if(!t||t==="없음") continue;
+    await speakKorean(t, rate);
+    await new Promise(function(r){setTimeout(r,300);});
+  }
+}
+function useAutoSpeak(texts, deps){
+  useEffect(function(){
+    if(!texts||texts.length===0) return;
+    var valid=texts.filter(function(t){return t&&t!=="없음";});
+    if(valid.length===0) return;
+    var timer=setTimeout(function(){speakSequence(valid,0.85);},600);
+    return function(){clearTimeout(timer);window.speechSynthesis.cancel();};
+  }, deps);
+}
+
+// ── UI HELPERS ───────────────────────────────────────────────────────────────
+function HeartScore(props){
+  var score=props.score; var max=props.max||5;
+  return (
+    React.createElement("div",{className:"flex gap-1 justify-center"},
+      Array.from({length:max}).map(function(_,i){
+        return React.createElement("span",{key:i,className:"text-3xl transition-all duration-300 "+(i<score?"animate-heartbeat":"opacity-20")},
+          i<score?"❤️":"🤍"
+        );
+      })
+    )
+  );
+}
+
+function SpeakBtn(props){
+  var text=props.text; var size=props.size||"lg"; var label=props.label||"";
+  var _s=useState(false); var playing=_s[0]; var setPlaying=_s[1];
+  var sizeClass=size==="lg"?"text-4xl w-16 h-16":"text-2xl w-10 h-10";
+  return (
+    React.createElement("button",{
+      onClick:function(){setPlaying(true);speakKorean(text).then(function(){setPlaying(false);});},
+      className:sizeClass+" rounded-full bg-yellow-300 hover:bg-yellow-400 active:scale-95 transition-all flex items-center justify-center shadow-lg border-4 border-yellow-400 "+(playing?"animate-bounce":""),
+      title:label||'"'+text+'" 듣기'
+    }, playing?"🔈":"🔊")
+  );
+}
+
+function FeedbackCard(props){
+  var emoji=props.emoji; var label=props.label; var text=props.text;
+  var bgClass=props.bgClass; var borderClass=props.borderClass;
+  var textClass=props.textClass; var labelClass=props.labelClass;
+  var _s=useState(false); var playing=_s[0]; var setPlaying=_s[1];
+  if(!text||text==="없음") return null;
+  return (
+    React.createElement("div",{className:"rounded-2xl p-4 border-2 "+bgClass+" "+borderClass},
+      React.createElement("div",{className:"flex items-start gap-3"},
+        React.createElement("button",{
+          onClick:function(){setPlaying(true);speakKorean(text,0.82).then(function(){setPlaying(false);});},
+          className:"shrink-0 w-14 h-14 rounded-full bg-white/80 border-4 border-white shadow-md text-3xl flex items-center justify-center transition-all hover:scale-110 active:scale-95 "+(playing?"animate-bounce":"")
+        }, playing?"🔈":"🔊"),
+        React.createElement("div",{className:"flex-1 min-w-0"},
+          React.createElement("p",{className:"text-sm font-black mb-1 "+labelClass}, emoji+" "+label),
+          React.createElement("p",{className:"text-base font-bold leading-relaxed "+textClass}, text)
+        )
+      )
+    )
+  );
+}
+
+function ReadAllBtn(props){
+  var texts=props.texts; var label=props.label||"전체 읽기 🔊";
+  var _s=useState(false); var playing=_s[0]; var setPlaying=_s[1];
+  async function readAll(){
+    if(playing){window.speechSynthesis.cancel();setPlaying(false);return;}
+    setPlaying(true);
+    await speakSequence(texts,0.82);
+    setPlaying(false);
+  }
+  return (
+    React.createElement("button",{
+      onClick:readAll,
+      className:"w-full h-16 rounded-2xl text-xl font-black border-4 shadow-lg transition-all flex items-center justify-center gap-2 "+(playing?"bg-red-400 text-white border-red-500 animate-pulse":"bg-gradient-to-r from-yellow-300 to-orange-300 text-orange-800 border-orange-300 hover:scale-105 active:scale-95")
+    },
+      React.createElement("span",{className:"text-2xl"}, playing?"⏹️":"🔊"),
+      playing?"멈추기":label
+    )
+  );
+}
+
+function BigMicBtn(props){
+  var recording=props.recording; var onClick=props.onClick; var disabled=props.disabled;
+  return (
+    React.createElement("div",{className:"relative flex items-center justify-center w-40 h-40 mx-auto my-4"},
+      recording&&React.createElement(React.Fragment,null,
+        React.createElement("div",{className:"mic-ring absolute inset-0 rounded-full border-4 border-pink-400 opacity-60"}),
+        React.createElement("div",{className:"mic-ring2 absolute inset-0 rounded-full border-4 border-purple-400 opacity-40"})
+      ),
+      React.createElement("button",{
+        onClick:onClick, disabled:disabled,
+        className:"w-28 h-28 rounded-full text-6xl flex items-center justify-center shadow-2xl transition-all duration-200 border-8 "+(recording?"bg-red-400 border-red-500 animate-glow scale-110":"bg-gradient-to-br from-pink-400 to-purple-500 border-purple-400 hover:scale-105 active:scale-95")+" "+(disabled?"opacity-40 cursor-not-allowed":"cursor-pointer")
+      }, recording?"⏹️":"🎙️")
+    )
+  );
+}
+
+function Spinner(props){
+  var text=props.text||"";
+  return (
+    React.createElement("div",{className:"flex flex-col items-center justify-center gap-4 p-8"},
+      React.createElement("div",{className:"w-16 h-16 border-4 border-purple-200 border-t-purple-500 rounded-full animate-spin"}),
+      text&&React.createElement("p",{className:"text-lg text-purple-500 font-bold"},text)
+    )
+  );
+}
+
+function WordCard(props){
+  var word=props.word;
+  var emoji=WORD_EMOJIS[word]||"✨";
+  return (
+    React.createElement("div",{className:"flex flex-col items-center gap-2"},
+      React.createElement("span",{className:"text-8xl animate-float"},emoji),
+      React.createElement("div",{className:"text-5xl font-black text-purple-700 tracking-widest"},word)
+    )
+  );
+}
+
+// ── STT HELPER ──
+// continuous:false 유지 (안정적), interimResults로 발화 감지
+// 말하는 동안 계속 기다리다가 침묵 1.5초 후 종료
+function createSTTManager(onResult, onDone, onError){
+  var aborted = false;
+  var doneCalledRef = {v: false};
+  var recognitionRef = {current: null};
+  var retryCount = 0;
+  var accumulatedText = "";  // 여러 세션에서 누적된 텍스트
+  var noSpeechTimer = null;  // 아무 말도 안 할 때 5초 후 종료
+  var postSpeechTimer = null; // 말 끝난 후 1.5초 대기 타이머
+
+  function clearTimers(){
+    if(noSpeechTimer){ clearTimeout(noSpeechTimer); noSpeechTimer = null; }
+    if(postSpeechTimer){ clearTimeout(postSpeechTimer); postSpeechTimer = null; }
+  }
+
+  function callDoneOnce(){
+    clearTimers();
+    if(doneCalledRef.v || aborted) return;
+    doneCalledRef.v = true;
+    onDone();
+  }
+
+  function startSession(){
+    if(aborted) return;
+    window.speechSynthesis.cancel();
+
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if(!SR){ onError("음성 인식 미지원 브라우저"); return; }
+
+    var rec = new SR();
+    recognitionRef.current = rec;
+    rec.lang = "ko-KR";
+    rec.continuous = false;      // ★ false — onend가 확실히 발생
+    rec.interimResults = true;   // ★ 중간결과로 발화 감지
+    rec.maxAlternatives = 1;
+
+    var sessionGotSpeech = false; // 이 세션에서 음성이 감지됐는지
+
+    // 아무 말도 없으면 5초 후 종료
+    noSpeechTimer = setTimeout(function(){
+      if(!sessionGotSpeech && !aborted && accumulatedText === ""){
+        console.log("5초 무음 → 종료");
+        callDoneOnce();
+      }
+    }, 5000);
+
+    rec.onresult = function(e){
+      if(aborted) return;
+      sessionGotSpeech = true;
+      clearTimeout(noSpeechTimer); noSpeechTimer = null;
+
+      for(var i = e.resultIndex; i < e.results.length; i++){
+        if(e.results[i].isFinal){
+          accumulatedText += e.results[i][0].transcript;
+        }
+      }
+      // 최종 결과 즉시 전달 (onend 기다리지 않음)
+      if(accumulatedText){
+        onResult(accumulatedText.trim());
+      }
+    };
+
+    rec.onerror = function(e){
+      if(aborted) return;
+      clearTimers();
+      if(e.error === "aborted") return;
+      if(e.error === "no-speech"){
+        // 말을 시작했다가 멈춘 경우 — 누적 결과가 있으면 완료
+        if(accumulatedText){
+          callDoneOnce();
+        } else if(retryCount < 2){
+          retryCount++;
+          setTimeout(startSession, 200);
+        } else {
+          callDoneOnce();
+        }
+      } else {
+        onError(e.error);
+        callDoneOnce();
+      }
+    };
+
+    rec.onend = function(){
+      if(aborted) return;
+      clearTimeout(noSpeechTimer); noSpeechTimer = null;
+
+      if(sessionGotSpeech && accumulatedText){
+        // ★ 말을 했고 결과도 있음 → 1.5초 더 기다렸다가 종료
+        // (연속으로 말하는 경우 대비 — 1.5초 안에 다시 말하면 세션 재시작)
+        postSpeechTimer = setTimeout(function(){
+          if(!aborted) callDoneOnce();
+        }, 1500);
+      } else if(sessionGotSpeech && !accumulatedText){
+        // 말소리는 들렸지만 STT 결과 없음 → 재시도
+        if(retryCount < 2){
+          retryCount++;
+          setTimeout(startSession, 200);
+        } else {
+          callDoneOnce();
+        }
+      } else {
+        // 아무 소리도 없었음
+        if(retryCount < 2){
+          retryCount++;
+          setTimeout(startSession, 200);
+        } else {
+          callDoneOnce();
+        }
+      }
+    };
+
+    try{ rec.start(); }
+    catch(e){ console.warn("STT start 실패", e); callDoneOnce(); }
+  }
+
+  function abort(){
+    clearTimers();
+    aborted = true;
+    if(recognitionRef.current){
+      recognitionRef.current.onend = null;
+      recognitionRef.current.onerror = null;
+      recognitionRef.current.onresult = null;
+      try{ recognitionRef.current.stop(); }catch(e){}
+    }
+    // abort시엔 결과 없이 그냥 종료
+    if(!doneCalledRef.v){ doneCalledRef.v = true; onDone(); }
+  }
+
+  return {start: startSession, abort: abort};
+}
+
+// ── AI ANALYZE ───────────────────────────────────────────────────────────────
+async function analyzeWithAI(recText, targetWord, fbType){
+  if(!GEMINI_API_KEY){
+    var match=recText.trim()===targetWord.trim();
+    var partial=targetWord.split("").some(function(ch){return recText.includes(ch);});
+    return {
+      score:match?5:(partial?3:1),
+      missed:recText?("인식된 발음: \""+recText+"\""):"소리가 잘 들리지 않았어요",
+      advice:match?"정말 잘했어요! 🎉":("\""+targetWord+"\"를 다시 한 번 따라해 봐요!"),
+      phonetics_good:"",phonetics_weak:"",offline:true,
+      _debug:{recText:recText,targetWord:targetWord}
+    };
+  }
+  var prompt = '당신은 한국어 유아 발음 평가 전문가입니다.\n\n목표 단어: "'+targetWord+'"\n음성 인식(STT) 결과: "'+(recText||"(인식 실패)")+'"\n\n평가 지침:\n1. STT는 완벽하지 않습니다. "사과"를 말해도 "사과요", "사 과" 등으로 인식될 수 있습니다.\n2. STT 결과에 목표 단어가 포함되어 있거나 매우 유사하면 높은 점수(4~5)를 주세요.\n3. STT 결과가 "(인식 실패)"이거나 목표 단어와 전혀 다르면 낮은 점수(0~2)를 주세요.\n4. 유아/어린이 발음은 성인보다 관대하게 평가하세요.\n\n채점 기준:\n- 5점: STT 결과가 목표 단어와 동일하거나 목표 단어를 포함\n- 4점: 한두 글자 차이 또는 STT 오인식으로 보이는 경우\n- 3점: 첫 음절이나 주요 자음/모음이 맞는 경우\n- 2점: 일부 소리만 비슷한 경우\n- 1점: 거의 다른 소리\n- 0점: 인식 실패 또는 전혀 다른 말\n\n아래 JSON만 응답하세요. 다른 설명 없이:\n{"score":5,"missed":"없음","advice":"잘했어요!","phonetics_good":"없음","phonetics_weak":"없음"}\n\n위 형식의 키를 그대로 사용하고, 실제 평가값을 채워서 응답하세요:\n- score: 위 기준에 따른 0~5 정수\n- missed: 부족한 발음 (없으면 "없음")\n- advice: '+(fbType==="detailed"?'"어떻게 발음을 개선할 수 있는지 유아에게 친근한 말투로 1~2문장"':'"짧은 칭찬이나 격려 한 문장"')+'\n- phonetics_good: 잘된 자모음 (없으면 "없음")\n- phonetics_weak: 약한 자모음 (없으면 "없음")';
+  var raw=await callGemini(prompt);
+  console.log("[AI응답]",raw);
+  var parsed=safeParseJSON(raw);
+  return {
+    score:Math.min(5,Math.max(0,parseInt(parsed.score)||0)),
+    missed:parsed.missed||"",
+    advice:parsed.advice||"",
+    phonetics_good:parsed.phonetics_good||"",
+    phonetics_weak:parsed.phonetics_weak||"",
+    offline:false,
+    _debug:{recText:recText,targetWord:targetWord,raw:raw.slice(0,120)}
+  };
+}
+
+// ── PRACTICE FEEDBACK CARD ───────────────────────────────────────────────────
+function PracticeFeedbackCard(props){
+  var result=props.result; var feedbackType=props.feedbackType;
+  var audioUrl=props.audioUrl; var word=props.word; var onNext=props.onNext;
+  var scoreLabel=result.score>=4?"정말 잘했어요!":result.score>=3?"좋아요!":"조금 더 연습해요!";
+  var scoreEmoji=result.score>=4?"🎉":result.score>=3?"👍":"💪";
+  var autoTexts=[scoreLabel];
+  if(feedbackType==="detailed"){
+    if(result.missed&&result.missed!=="없음") autoTexts.push(result.missed);
+    if(result.advice) autoTexts.push(result.advice);
+  }
+  useAutoSpeak(autoTexts,[result]);
+  var allTexts=[scoreLabel].concat(feedbackType==="detailed"?[result.missed,result.advice].filter(Boolean):[]);
+  return (
+    React.createElement("div",{className:"bg-white/95 rounded-3xl p-5 w-full max-w-md border-4 border-yellow-200 shadow-xl animate-pop space-y-3"},
+      result._debug&&React.createElement("details",{className:"bg-gray-100 rounded-2xl border-2 border-gray-300 text-xs"},
+        React.createElement("summary",{className:"px-3 py-2 font-black text-gray-500 cursor-pointer"},"🔍 개발자 확인용"),
+        React.createElement("div",{className:"px-3 pb-3 space-y-1 text-gray-600 break-all"},
+          React.createElement("p",null,React.createElement("span",{className:"font-black"},"목표 단어: "),result._debug.targetWord),
+          React.createElement("p",null,React.createElement("span",{className:"font-black"},"STT 인식값: "),'"'+(result._debug.recText||"(없음)")+'"'),
+          result._debug.raw&&React.createElement("p",null,React.createElement("span",{className:"font-black"},"AI 원본: "),result._debug.raw)
+        )
+      ),
+      React.createElement("div",{className:"text-center"},
+        React.createElement("p",{className:"text-3xl font-black text-yellow-700"},scoreEmoji+" "+scoreLabel),
+        React.createElement("div",{className:"mt-2"},React.createElement(HeartScore,{score:result.score}))
+      ),
+      React.createElement(ReadAllBtn,{texts:allTexts,label:"피드백 전체 읽기 🔊"}),
+      audioUrl&&React.createElement("div",{className:"flex items-center gap-3 bg-purple-50 rounded-2xl px-4 py-3 border-2 border-purple-200"},
+        React.createElement("span",{className:"text-2xl shrink-0"},"🎤"),
+        React.createElement("div",{className:"flex-1 min-w-0"},
+          React.createElement("p",{className:"text-xs font-black text-purple-400 mb-1"},"내 목소리 듣기"),
+          React.createElement("audio",{controls:true,src:audioUrl,className:"w-full rounded-xl"})
+        )
+      ),
+      feedbackType==="detailed"&&React.createElement("div",{className:"space-y-2"},
+        React.createElement(FeedbackCard,{emoji:"⚠️",label:"부족한 발음",text:result.missed,bgClass:"bg-red-50",borderClass:"border-red-200",textClass:"text-red-700",labelClass:"text-red-500"}),
+        React.createElement(FeedbackCard,{emoji:"💡",label:"이렇게 해봐요!",text:result.advice,bgClass:"bg-blue-50",borderClass:"border-blue-200",textClass:"text-blue-700",labelClass:"text-blue-500"}),
+        React.createElement(FeedbackCard,{emoji:"✅",label:"잘한 발음",text:result.phonetics_good,bgClass:"bg-green-50",borderClass:"border-green-200",textClass:"text-green-700",labelClass:"text-green-500"})
+      ),
+      React.createElement("div",{className:"flex gap-3 pt-1"},
+        React.createElement("button",{onClick:onNext,className:"flex-1 h-16 rounded-2xl bg-gradient-to-r from-green-400 to-teal-400 text-white text-xl font-black shadow-lg hover:scale-105 active:scale-95 transition-all border-4 border-green-500"},"다음 단어 ▶"),
+        React.createElement("button",{onClick:function(){speakKorean(word);},className:"w-16 h-16 rounded-2xl bg-yellow-300 border-4 border-yellow-400 text-3xl shadow-lg hover:scale-105 active:scale-95 transition-all"},"🔊")
+      )
+    )
+  );
+}
+
+// ── MAIN MENU ────────────────────────────────────────────────────────────────
+function MainMenu(props){
+  var onStart=props.onStart; var apiReady=props.apiReady;
+  var _a=useState(null); var age=_a[0]; var setAge=_a[1];
+  var _m=useState(null); var appMode=_m[0]; var setAppMode=_m[1];
+  return (
+    React.createElement("div",{className:"min-h-screen bg-gradient-to-b from-pink-100 via-purple-100 to-blue-100 flex flex-col items-center justify-center p-6 gap-8"},
+      React.createElement("div",{className:"text-center"},
+        React.createElement("div",{className:"text-7xl animate-float mb-2"},"🎙️"),
+        React.createElement("h1",{className:"text-4xl font-black text-purple-700"},"발음 연습"),
+        React.createElement("p",{className:"text-lg text-purple-400 font-bold mt-1"},"같이 따라 읽어봐요! 👶")
+      ),
+      React.createElement("div",{className:"bg-white/80 rounded-3xl shadow-xl p-6 w-full max-w-md border-4 border-purple-200"},
+        React.createElement("div",{className:"flex items-center gap-3 mb-4"},
+          React.createElement(SpeakBtn,{text:"몇 살이에요?",size:"md",label:"나이 선택 안내"}),
+          React.createElement("p",{className:"text-2xl font-black text-gray-700"},"나이를 골라요!")
+        ),
+        React.createElement("div",{className:"flex gap-3 justify-center flex-wrap"},
+          [5,6,7].map(function(a){
+            return React.createElement("button",{key:a,onClick:function(){setAge(a);},
+              className:"w-24 h-24 rounded-2xl text-4xl font-black transition-all duration-200 border-4 shadow-lg "+(age===a?"bg-purple-500 text-white border-purple-600 scale-110 shadow-purple-300":"bg-purple-50 text-purple-700 border-purple-200 hover:scale-105")},a+"세");
+          })
+        )
+      ),
+      React.createElement("div",{className:"bg-white/80 rounded-3xl shadow-xl p-6 w-full max-w-md border-4 border-pink-200"},
+        React.createElement("div",{className:"flex items-center gap-3 mb-4"},
+          React.createElement(SpeakBtn,{text:"어떤 걸 할까요?",size:"md",label:"모드 선택 안내"}),
+          React.createElement("p",{className:"text-2xl font-black text-gray-700"},"무엇을 할까요?")
+        ),
+        React.createElement("div",{className:"flex gap-4 justify-center"},
+          React.createElement("button",{onClick:function(){setAppMode("practice");},className:"flex-1 h-28 rounded-2xl flex flex-col items-center justify-center gap-2 text-2xl font-black border-4 shadow-lg transition-all "+(appMode==="practice"?"bg-green-400 text-white border-green-500 scale-105":"bg-green-50 text-green-700 border-green-200 hover:scale-105")},
+            React.createElement("span",{className:"text-4xl"},"🎮"),
+            React.createElement("span",null,"연습모드")
+          ),
+          React.createElement("button",{onClick:function(){setAppMode("eval");},className:"flex-1 h-28 rounded-2xl flex flex-col items-center justify-center gap-2 text-2xl font-black border-4 shadow-lg transition-all "+(appMode==="eval"?"bg-yellow-400 text-white border-yellow-500 scale-105":"bg-yellow-50 text-yellow-700 border-yellow-200 hover:scale-105")},
+            React.createElement("span",{className:"text-4xl"},"🏆"),
+            React.createElement("span",null,"평가모드")
+          )
+        )
+      ),
+      !apiReady&&React.createElement("div",{className:"bg-orange-100 border-2 border-orange-300 rounded-2xl px-4 py-3 text-center text-orange-700 text-sm font-bold max-w-md"},"⚠️ Gemini API 키가 없어요. AI 피드백 없이도 연습은 가능해요!"),
+      React.createElement("button",{
+        onClick:function(){if(age&&appMode) onStart(age,appMode);},
+        disabled:!age||!appMode,
+        className:"w-full max-w-md h-20 rounded-3xl text-3xl font-black shadow-xl border-4 transition-all "+(age&&appMode?"bg-gradient-to-r from-pink-400 to-purple-500 text-white border-purple-400 hover:scale-105 active:scale-95 animate-glow":"bg-gray-200 text-gray-400 border-gray-300 opacity-60 cursor-not-allowed")
+      }, age&&appMode?"시작! 🚀":"나이와 모드를 골라요 👆")
+    )
+  );
+}
+
+// ── PRACTICE MODE ────────────────────────────────────────────────────────────
+function PracticeMode(props){
+  var age=props.age; var onExit=props.onExit;
+  var _ft=useState(null); var feedbackType=_ft[0]; var setFeedbackType=_ft[1];
+  var _ph=useState("setup"); var phase=_ph[0]; var setPhase=_ph[1];
+  var _w=useState(""); var word=_w[0]; var setWord=_w[1];
+  var _rec=useState(false); var recording=_rec[0]; var setRecording=_rec[1];
+  var _au=useState(null); var audioUrl=_au[0]; var setAudioUrl=_au[1];
+  var _rz=useState(""); var recognized=_rz[0]; var setRecognized=_rz[1];
+  var _an=useState(false); var analyzing=_an[0]; var setAnalyzing=_an[1];
+  var _rs=useState(null); var result=_rs[0]; var setResult=_rs[1];
+  var _err=useState(""); var error=_err[0]; var setError=_err[1];
+  var mediaRecRef=useRef(null); var chunksRef=useRef([]);
+  var sttMgrRef=useRef(null);
+  var recognizedRef=useRef(""); var wordRef=useRef(""); var ftRef=useRef("");
+
+  function pickWord(){
+    var list=WORDS[age];
+    return list[Math.floor(Math.random()*list.length)];
+  }
+  function startPractice(type){
+    setFeedbackType(type); ftRef.current=type;
+    var w=pickWord(); setWord(w); wordRef.current=w;
+    setPhase("practice"); setResult(null); setAudioUrl(null);
+    setRecognized(""); recognizedRef.current=""; setError("");
+  }
+  function nextWord(){
+    var w=pickWord(); setWord(w); wordRef.current=w;
+    setResult(null); setAudioUrl(null);
+    setRecognized(""); recognizedRef.current=""; setError("");
+  }
+  async function startRecording(){
+    setError(""); setRecognized(""); recognizedRef.current="";
+    setAudioUrl(null); setResult(null); chunksRef.current=[];
+    try{
+      var stream=await navigator.mediaDevices.getUserMedia({audio:true});
+      var mr=new MediaRecorder(stream);
+      mediaRecRef.current=mr;
+      mr.ondataavailable=function(e){if(e.data.size>0) chunksRef.current.push(e.data);};
+      mr.onstop=function(){
+        var blob=new Blob(chunksRef.current,{type:"audio/webm"});
+        setAudioUrl(URL.createObjectURL(blob));
+        stream.getTracks().forEach(function(t){t.stop();});
+      };
+      mr.start();
+    }catch(e){console.warn("녹음 실패",e.message);}
+    var mgr=createSTTManager(
+      function(text){recognizedRef.current=text; setRecognized(text);},
+      function(){
+        setRecording(false);
+        if(mediaRecRef.current&&mediaRecRef.current.state!=="inactive") mediaRecRef.current.stop();
+        setTimeout(function(){doAnalyze();}, 500);
+      },
+      function(err){
+        setError("음성 인식 오류: "+err);
+        setRecording(false);
+        if(mediaRecRef.current&&mediaRecRef.current.state!=="inactive") mediaRecRef.current.stop();
+        setTimeout(function(){doAnalyze();}, 500);
+      },
+    );
+    sttMgrRef.current=mgr;
+    mgr.start();
+    setRecording(true);
+  }
+  function stopRecording(){
+    // 수동 중지: STT 강제 종료 (abort가 내부적으로 onDone 호출)
+    if(sttMgrRef.current) sttMgrRef.current.abort();
+    // abort가 onDone을 호출하므로 여기서 추가 처리 불필요
+  }
+  function finishRecording(){
+    setRecording(false);
+    if(mediaRecRef.current&&mediaRecRef.current.state!=="inactive") mediaRecRef.current.stop();
+    setTimeout(function(){doAnalyze();},500);
+  }
+  async function doAnalyze(){
+    setAnalyzing(true); setError("");
+    try{
+      var r=await analyzeWithAI(recognizedRef.current,wordRef.current,ftRef.current);
+      setResult(r);
+    }catch(e){
+      setError("AI 분석 오류: "+e.message);
+      setResult({score:0,missed:"분석 실패",advice:"다시 시도해보세요!",phonetics_good:"",phonetics_weak:"",offline:true,_debug:{recText:recognizedRef.current,targetWord:wordRef.current}});
+    }
+    setAnalyzing(false);
+  }
+
+  if(phase==="setup"){
+    return (
+      React.createElement("div",{className:"min-h-screen bg-gradient-to-b from-green-100 to-blue-100 flex flex-col items-center justify-center p-6 gap-6"},
+        React.createElement("button",{onClick:onExit,className:"self-start text-2xl bg-white/70 rounded-full px-4 py-2 font-bold text-gray-500"},"← 뒤로"),
+        React.createElement("div",{className:"text-center"},
+          React.createElement("div",{className:"text-7xl animate-float"},"🎮"),
+          React.createElement("h2",{className:"text-4xl font-black text-green-700 mt-2"},"연습 모드")
+        ),
+        React.createElement("div",{className:"bg-white/80 rounded-3xl p-6 w-full max-w-md border-4 border-green-200 shadow-xl"},
+          React.createElement("div",{className:"flex items-center gap-3 mb-5"},
+            React.createElement(SpeakBtn,{text:"어떤 피드백을 받을까요?",size:"md"}),
+            React.createElement("p",{className:"text-xl font-black text-gray-700"},"피드백 종류를 골라요!")
+          ),
+          React.createElement("div",{className:"flex flex-col gap-4"},
+            React.createElement("button",{onClick:function(){startPractice("simple");},className:"w-full h-28 rounded-2xl bg-pink-50 border-4 border-pink-300 flex flex-col items-center justify-center gap-1 hover:scale-105 transition-all shadow-lg"},
+              React.createElement("span",{className:"text-3xl"},"❤️❤️❤️"),
+              React.createElement("span",{className:"text-xl font-black text-pink-700"},"간단 피드백"),
+              React.createElement("span",{className:"text-sm text-pink-500"},"하트로만 점수를 알려줘요")
+            ),
+            React.createElement("button",{onClick:function(){startPractice("detailed");},className:"w-full h-28 rounded-2xl bg-purple-50 border-4 border-purple-300 flex flex-col items-center justify-center gap-1 hover:scale-105 transition-all shadow-lg"},
+              React.createElement("span",{className:"text-3xl"},"❤️💬✨"),
+              React.createElement("span",{className:"text-xl font-black text-purple-700"},"상세 피드백"),
+              React.createElement("span",{className:"text-sm text-purple-500"},"하트 + 자세한 조언도 알려줘요")
+            )
+          )
+        )
+      )
+    );
+  }
+  return (
+    React.createElement("div",{className:"min-h-screen bg-gradient-to-b from-green-100 to-purple-100 flex flex-col items-center p-4 gap-4"},
+      React.createElement("div",{className:"w-full max-w-md flex items-center justify-between"},
+        React.createElement("button",{onClick:onExit,className:"text-xl bg-white/70 rounded-full px-4 py-2 font-bold text-gray-500"},"← 나가기"),
+        React.createElement("span",{className:"bg-white/80 rounded-full px-4 py-2 font-bold text-green-600 border-2 border-green-200"},"🎮 연습 모드 ("+age+"세)")
+      ),
+      React.createElement("div",{className:"bg-white/90 rounded-3xl p-6 w-full max-w-md border-4 border-purple-200 shadow-xl text-center"},
+        React.createElement("div",{className:"flex items-center justify-center gap-4 mb-2"},
+          React.createElement(SpeakBtn,{text:word,size:"lg",label:"단어 듣기"}),
+          React.createElement(WordCard,{word:word}),
+          React.createElement(SpeakBtn,{text:word,size:"lg",label:"단어 듣기"})
+        ),
+        React.createElement("p",{className:"text-base text-gray-400 mt-2 font-bold"},"🔊 버튼을 눌러서 먼저 들어보세요!")
+      ),
+      React.createElement("div",{className:"bg-white/90 rounded-3xl p-4 w-full max-w-md border-4 border-pink-200 shadow-xl text-center"},
+        React.createElement("div",{className:"flex items-center justify-center gap-3 mb-2"},
+          React.createElement(SpeakBtn,{text:recording?"지금 말해요":"마이크 버튼을 누르고 따라 읽어보세요",size:"md"}),
+          React.createElement("p",{className:"text-lg font-black text-pink-700"},recording?"지금 말해요! 🎤":"따라 읽어봐요!")
+        ),
+        React.createElement(BigMicBtn,{recording:recording,onClick:recording?stopRecording:startRecording,disabled:analyzing}),
+        recognized&&!result&&React.createElement("div",{className:"mt-2 bg-purple-50 rounded-2xl px-4 py-2 border-2 border-purple-200"},
+          React.createElement("p",{className:"text-sm text-purple-400 font-bold"},"들린 내용:"),
+          React.createElement("p",{className:"text-xl font-black text-purple-700"},'"'+recognized+'"')
+        ),
+        error&&React.createElement("p",{className:"text-sm text-red-500 mt-2 font-bold"},error)
+      ),
+      analyzing&&React.createElement(Spinner,{text:"AI가 분석 중이에요 🤖"}),
+      result&&React.createElement(PracticeFeedbackCard,{result:result,feedbackType:feedbackType,audioUrl:audioUrl,word:word,onNext:nextWord})
+    )
+  );
+}
+
+// ── EVAL MODE ─────────────────────────────────────────────────────────────────
+function EvalMode(props){
+  var age=props.age; var onExit=props.onExit;
+  var TOTAL=7;
+  var _ph=useState("intro"); var phase=_ph[0]; var setPhase=_ph[1];
+  var _qi=useState(0); var qIndex=_qi[0]; var setQIndex=_qi[1];
+  var _ws=useState([]); var words=_ws[0]; var setWords=_ws[1];
+  var _rcs=useState([]); var recordings=_rcs[0]; var setRecordings=_rcs[1];
+  var _rec=useState(false); var recording=_rec[0]; var setRecording=_rec[1];
+  var _rz=useState(""); var recognized=_rz[0]; var setRecognized=_rz[1];
+  var _au=useState(null); var audioUrl=_au[0]; var setAudioUrl=_au[1];
+  var _an=useState(false); var analyzing=_an[0]; var setAnalyzing=_an[1];
+  var _rpt=useState(null); var report=_rpt[0]; var setReport=_rpt[1];
+  var _err=useState(""); var error=_err[0]; var setError=_err[1];
+  var mediaRecRef=useRef(null); var chunksRef=useRef([]);
+  var sttMgrRef=useRef(null);
+  var recognizedRef=useRef(""); var audioUrlRef=useRef(null);
+  var recordingsRef=useRef([]); var qIndexRef=useRef(0); var wordsRef=useRef([]);
+
+  function initWords(){
+    var pool=EVAL_WORDS[age].slice();
+    for(var i=pool.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1));var t=pool[i];pool[i]=pool[j];pool[j]=t;}
+    return pool.slice(0,TOTAL);
+  }
+  function startEval(){
+    var w=initWords(); setWords(w); wordsRef.current=w;
+    setQIndex(0); qIndexRef.current=0;
+    setRecordings([]); recordingsRef.current=[];
+    setPhase("question");
+    setRecognized(""); recognizedRef.current="";
+    setAudioUrl(null); audioUrlRef.current=null; setError("");
+  }
+  async function startRecording(){
+    setError(""); setRecognized(""); recognizedRef.current="";
+    setAudioUrl(null); audioUrlRef.current=null; chunksRef.current=[];
+    try{
+      var stream=await navigator.mediaDevices.getUserMedia({audio:true});
+      var mr=new MediaRecorder(stream);
+      mediaRecRef.current=mr;
+      mr.ondataavailable=function(e){if(e.data.size>0) chunksRef.current.push(e.data);};
+      mr.onstop=function(){
+        var blob=new Blob(chunksRef.current,{type:"audio/webm"});
+        var url=URL.createObjectURL(blob);
+        audioUrlRef.current=url; setAudioUrl(url);
+        stream.getTracks().forEach(function(t){t.stop();});
+      };
+      mr.start();
+    }catch(e){console.warn("녹음 실패",e.message);}
+    var mgr=createSTTManager(
+      function(text){recognizedRef.current=text; setRecognized(text);},
+      function(){
+        setRecording(false);
+        if(mediaRecRef.current&&mediaRecRef.current.state!=="inactive") mediaRecRef.current.stop();
+        setTimeout(function(){setAudioUrl(audioUrlRef.current); setRecognized(recognizedRef.current);}, 500);
+      },
+      function(err){
+        setError("인식 오류: "+err);
+        setRecording(false);
+        if(mediaRecRef.current&&mediaRecRef.current.state!=="inactive") mediaRecRef.current.stop();
+        setTimeout(function(){setAudioUrl(audioUrlRef.current); setRecognized(recognizedRef.current);}, 500);
+      },
+    );
+    sttMgrRef.current=mgr; mgr.start(); setRecording(true);
+  }
+  function stopRecording(){
+    if(sttMgrRef.current) sttMgrRef.current.abort();
+  }
+  function finishEvalRec(){
+    setRecording(false);
+    if(mediaRecRef.current&&mediaRecRef.current.state!=="inactive") mediaRecRef.current.stop();
+    setTimeout(function(){setAudioUrl(audioUrlRef.current); setRecognized(recognizedRef.current);},500);
+  }
+  function saveAndNext(){
+    var entry={word:wordsRef.current[qIndexRef.current],audioUrl:audioUrlRef.current,recognized:recognizedRef.current||"(인식 실패)"};
+    var newRecs=recordingsRef.current.concat([entry]);
+    recordingsRef.current=newRecs; setRecordings(newRecs);
+    var nextIdx=qIndexRef.current+1;
+    if(nextIdx<TOTAL){
+      qIndexRef.current=nextIdx; setQIndex(nextIdx);
+      setRecognized(""); recognizedRef.current="";
+      setAudioUrl(null); audioUrlRef.current=null; setError("");
+    }else{generateReport(newRecs);}
+  }
+  async function generateReport(recs){
+    setPhase("analyzing"); setAnalyzing(true);
+    try{
+      if(!GEMINI_API_KEY){
+        setReport({level:age,praise:"열심히 발음 연습을 했어요! 정말 대단해요! 🌟",improve:"더 많이 연습하면 더 잘할 수 있어요!",good_phonemes:"ㅏ, ㅣ, ㄱ, ㅅ",weak_phonemes:"ㄹ, ㅊ, ㅈ",scores:recs.map(function(r){return{word:r.word,score:3,comment:""};})});
+      }else{
+        var summary=recs.map(function(r,i){return (i+1)+'. "'+r.word+'" → 아이가 말한 것: "'+r.recognized+'"';}).join("\n");
+        var prompt='당신은 언어치료 전문가입니다. 아래는 '+age+'세 아이의 발음 평가 결과입니다:\n\n'+summary+'\n\n이 아이의 발음 수준을 종합 평가해주세요. 반드시 아래 JSON만 응답하세요:\n{"level":"(5,6,7 중 숫자)","praise":"(잘한 점 칭찬 2~3문장)","improve":"(보완할 점 2~3문장)","good_phonemes":"(잘한 자모음)","weak_phonemes":"(약한 자모음)","scores":[{"word":"단어","score":0,"comment":"한 줄 평"}]}';
+        var raw=await callGemini(prompt);
+        var parsed=safeParseJSON(raw);
+        setReport({level:parseInt(parsed.level)||age,praise:parsed.praise||"잘 했어요!",improve:parsed.improve||"더 연습해봐요!",good_phonemes:parsed.good_phonemes||"",weak_phonemes:parsed.weak_phonemes||"",scores:parsed.scores||[]});
+      }
+    }catch(e){
+      setReport({level:age,praise:"평가를 완료했어요! 잘 했어요! 🎉",improve:"계속 연습해봐요!",good_phonemes:"",weak_phonemes:"",scores:recs.map(function(r){return{word:r.word,score:3,comment:""};})});
+    }
+    setAnalyzing(false); setPhase("report");
+  }
+
+  if(phase==="intro"){
+    return (
+      React.createElement("div",{className:"min-h-screen bg-gradient-to-b from-yellow-100 to-orange-100 flex flex-col items-center justify-center p-6 gap-6"},
+        React.createElement("button",{onClick:onExit,className:"self-start text-xl bg-white/70 rounded-full px-4 py-2 font-bold text-gray-500"},"← 뒤로"),
+        React.createElement("div",{className:"text-center"},
+          React.createElement("div",{className:"text-7xl animate-float"},"🏆"),
+          React.createElement("h2",{className:"text-4xl font-black text-yellow-700 mt-2"},"평가 모드"),
+          React.createElement("p",{className:"text-lg text-yellow-600 mt-1 font-bold"},age+"세 수준 · 총 "+TOTAL+"문제")
+        ),
+        React.createElement("div",{className:"bg-white/90 rounded-3xl p-6 w-full max-w-md border-4 border-yellow-200 shadow-xl space-y-3"},
+          [["1️⃣","단어를 듣고"],["2️⃣","마이크 버튼을 눌러요"],["3️⃣","따라 읽어요"],["4️⃣","총 7문제 다 풀어요"],["5️⃣","마지막에 종합 리포트가 나와요! 🎉"]].map(function(item){
+            return React.createElement("div",{key:item[1],className:"flex items-center gap-3 bg-yellow-50 rounded-2xl px-4 py-3 border-2 border-yellow-100"},
+              React.createElement("span",{className:"text-2xl"},item[0]),
+              React.createElement("span",{className:"text-lg font-bold text-gray-700"},item[1])
+            );
+          })
+        ),
+        React.createElement("button",{onClick:startEval,className:"w-full max-w-md h-20 rounded-3xl bg-gradient-to-r from-yellow-400 to-orange-400 text-white text-3xl font-black shadow-xl border-4 border-orange-400 hover:scale-105 active:scale-95 transition-all animate-glow"},"시작! 🚀")
+      )
+    );
+  }
+  if(phase==="analyzing"){
+    return React.createElement("div",{className:"min-h-screen bg-gradient-to-b from-yellow-100 to-purple-100 flex flex-col items-center justify-center gap-6"},
+      React.createElement(Spinner,{text:"AI가 종합 평가 중이에요... 🤖"}),
+      React.createElement("p",{className:"text-lg text-purple-500 font-bold animate-pulse"},"잠깐만 기다려요! 🌟")
+    );
+  }
+  if(phase==="report"&&report){
+    return React.createElement(EvalReport,{report:report,recordings:recordings,age:age,onRestart:startEval,onExit:onExit});
+  }
+
+  var currentWord=words[qIndex]||"";
+  var progress=(qIndex/TOTAL)*100;
+  var hasRecorded=audioUrl!==null||recognized!=="";
+  return (
+    React.createElement("div",{className:"min-h-screen bg-gradient-to-b from-yellow-100 to-blue-100 flex flex-col items-center p-4 gap-4"},
+      React.createElement("div",{className:"w-full max-w-md"},
+        React.createElement("div",{className:"flex items-center justify-between mb-2"},
+          React.createElement("button",{onClick:onExit,className:"text-xl bg-white/70 rounded-full px-4 py-2 font-bold text-gray-500"},"← 나가기"),
+          React.createElement("span",{className:"bg-white/80 rounded-full px-4 py-2 font-bold text-yellow-600 border-2 border-yellow-200"},(qIndex+1)+" / "+TOTAL+" 🏆")
+        ),
+        React.createElement("div",{className:"w-full bg-yellow-200 rounded-full h-4 border-2 border-yellow-300 overflow-hidden"},
+          React.createElement("div",{className:"h-full bg-gradient-to-r from-yellow-400 to-orange-400 rounded-full transition-all duration-500",style:{width:progress+"%"}})
+        )
+      ),
+      React.createElement("div",{className:"bg-white/90 rounded-3xl p-6 w-full max-w-md border-4 border-yellow-200 shadow-xl text-center"},
+        React.createElement("p",{className:"text-sm font-bold text-gray-400 mb-3"},"문제 "+(qIndex+1)),
+        React.createElement("div",{className:"flex items-center justify-center gap-4 mb-2"},
+          React.createElement(SpeakBtn,{text:currentWord,size:"lg",label:"단어 듣기"}),
+          React.createElement(WordCard,{word:currentWord}),
+          React.createElement(SpeakBtn,{text:currentWord,size:"lg",label:"단어 듣기"})
+        ),
+        React.createElement("p",{className:"text-sm text-gray-400 mt-2 font-bold"},"🔊 먼저 듣고 따라 읽어요!")
+      ),
+      React.createElement("div",{className:"bg-white/90 rounded-3xl p-5 w-full max-w-md border-4 border-pink-200 shadow-xl text-center"},
+        React.createElement("div",{className:"flex items-center justify-center gap-3 mb-1"},
+          React.createElement(SpeakBtn,{text:recording?"지금 말해요":"마이크 버튼을 눌러요",size:"md"}),
+          React.createElement("p",{className:"text-lg font-black text-pink-700"},recording?"말하고 있어요! 🎤":"따라 읽어요 🎙️")
+        ),
+        React.createElement(BigMicBtn,{recording:recording,onClick:recording?stopRecording:startRecording,disabled:false}),
+        recognized&&React.createElement("div",{className:"mt-2 bg-purple-50 rounded-2xl px-4 py-2 border-2 border-purple-200"},
+          React.createElement("p",{className:"text-sm text-purple-400 font-bold"},'들린 내용: "'+recognized+'"')
+        ),
+        audioUrl&&!recording&&React.createElement("div",{className:"mt-3 flex items-center justify-center gap-2"},
+          React.createElement("span",{className:"text-xl"},"✅"),
+          React.createElement("audio",{controls:true,src:audioUrl,className:"w-full max-w-xs rounded-xl"})
+        ),
+        error&&React.createElement("p",{className:"text-sm text-red-500 mt-2 font-bold"},error)
+      ),
+      React.createElement("button",{
+        onClick:saveAndNext, disabled:!hasRecorded,
+        className:"w-full max-w-md h-16 rounded-3xl text-2xl font-black shadow-xl border-4 transition-all "+(hasRecorded?"bg-gradient-to-r from-yellow-400 to-orange-400 text-white border-orange-400 hover:scale-105 active:scale-95":"bg-gray-200 text-gray-400 border-gray-300 opacity-60 cursor-not-allowed")
+      }, qIndex+1<TOTAL?"다음 문제 ▶":"결과 보기 🏆")
+    )
+  );
+}
+
+// ── EVAL REPORT ───────────────────────────────────────────────────────────────
+function EvalReport(props){
+  var report=props.report; var recordings=props.recordings; var age=props.age;
+  var onRestart=props.onRestart; var onExit=props.onExit;
+  var avgScore=report.scores&&report.scores.length>0
+    ?(report.scores.reduce(function(s,r){return s+(r.score||0);},0)/report.scores.length).toFixed(1):"?";
+  var stars=Math.round(parseFloat(avgScore))||0;
+  var introText="발음 평가가 끝났어요! "+report.level+"세 레벨이에요.";
+  useAutoSpeak([introText,report.praise,report.improve],[report]);
+  var allReadTexts=[introText,report.praise,report.improve,
+    report.good_phonemes&&report.good_phonemes!=="없음"?"잘하는 발음은 "+report.good_phonemes+" 이에요.":null,
+    report.weak_phonemes&&report.weak_phonemes!=="없음"?"더 연습할 발음은 "+report.weak_phonemes+" 이에요.":null
+  ].filter(Boolean);
+  return (
+    React.createElement("div",{className:"min-h-screen bg-gradient-to-b from-purple-100 via-pink-100 to-yellow-100 p-4 pb-10"},
+      React.createElement("div",{className:"max-w-lg mx-auto space-y-5"},
+        React.createElement("div",{className:"flex items-center justify-between no-print"},
+          React.createElement("button",{onClick:onExit,className:"text-xl bg-white/70 rounded-full px-4 py-2 font-bold text-gray-500"},"← 나가기"),
+          React.createElement("div",{className:"flex gap-2"},
+            React.createElement("button",{onClick:function(){window.print();},className:"bg-blue-400 text-white rounded-full px-4 py-2 font-bold text-sm hover:bg-blue-500"},"🖨️ 인쇄"),
+            React.createElement("button",{onClick:onRestart,className:"bg-yellow-400 text-white rounded-full px-4 py-2 font-bold text-sm hover:bg-yellow-500"},"🔄 다시")
+          )
+        ),
+        React.createElement("div",{className:"bg-white rounded-3xl p-6 shadow-xl border-4 border-yellow-200 text-center print-full"},
+          React.createElement("div",{className:"text-5xl mb-2 animate-float"},"🏆"),
+          React.createElement("h2",{className:"text-3xl font-black text-yellow-700"},"발음 평가 리포트"),
+          React.createElement("p",{className:"text-gray-400 font-bold mt-1"},age+"세 도전 완료!"),
+          React.createElement("div",{className:"flex justify-center gap-1 mt-3"},
+            Array.from({length:5}).map(function(_,i){return React.createElement("span",{key:i,className:"text-4xl transition-all "+(i<stars?"":"opacity-20")},i<stars?"⭐":"☆");})
+          ),
+          React.createElement("p",{className:"text-2xl font-black text-purple-600 mt-2"},"평균 점수: "+avgScore+"점 / 5점")
+        ),
+        React.createElement("div",{className:"no-print"},React.createElement(ReadAllBtn,{texts:allReadTexts,label:"리포트 전체 읽어주기 🔊"})),
+        React.createElement("div",{className:"bg-gradient-to-r from-purple-200 to-pink-200 rounded-3xl p-5 shadow-lg border-4 border-purple-300 print-full"},
+          React.createElement(FeedbackCard,{emoji:"🎯",label:"발음 수준",text:report.level+"세 레벨이에요! 정말 잘했어요!",bgClass:"bg-white/60",borderClass:"border-white/40",textClass:"text-purple-800 text-2xl font-black",labelClass:"text-purple-500"})
+        ),
+        React.createElement(FeedbackCard,{emoji:"🌟",label:"잘한 점!",text:report.praise,bgClass:"bg-green-50",borderClass:"border-green-200",textClass:"text-green-800",labelClass:"text-green-600"}),
+        React.createElement(FeedbackCard,{emoji:"💪",label:"더 잘할 수 있어요!",text:report.improve,bgClass:"bg-blue-50",borderClass:"border-blue-200",textClass:"text-blue-800",labelClass:"text-blue-600"}),
+        (report.good_phonemes||report.weak_phonemes)&&React.createElement("div",{className:"bg-white rounded-3xl p-5 shadow-xl border-4 border-gray-200 print-full space-y-3"},
+          React.createElement("p",{className:"text-xl font-black text-gray-700"},"🔬 발음 분석"),
+          React.createElement(FeedbackCard,{emoji:"✅",label:"잘하는 발음",text:report.good_phonemes,bgClass:"bg-green-50",borderClass:"border-green-200",textClass:"text-green-700 text-lg font-black",labelClass:"text-green-500"}),
+          React.createElement(FeedbackCard,{emoji:"⚠️",label:"연습이 필요해요",text:report.weak_phonemes,bgClass:"bg-red-50",borderClass:"border-red-200",textClass:"text-red-700 text-lg font-black",labelClass:"text-red-500"})
+        ),
+        report.scores&&report.scores.length>0&&React.createElement("div",{className:"bg-white rounded-3xl p-5 shadow-xl border-4 border-purple-200 print-full"},
+          React.createElement("p",{className:"text-xl font-black text-gray-700 mb-3"},"📋 문제별 결과"),
+          React.createElement("div",{className:"space-y-3"},
+            report.scores.map(function(s,i){
+              return React.createElement("div",{key:i,className:"flex items-center gap-3 bg-purple-50 rounded-2xl px-4 py-3 border-2 border-purple-100"},
+                React.createElement("span",{className:"text-lg font-black text-purple-400 w-6"},i+1),
+                React.createElement("span",{className:"text-xl font-black text-purple-700 w-20"},s.word),
+                React.createElement("div",{className:"flex gap-0.5"},
+                  Array.from({length:5}).map(function(_,j){return React.createElement("span",{key:j,className:"text-xl "+(j<(s.score||0)?"":"opacity-20")},j<(s.score||0)?"❤️":"🤍");})
+                ),
+                s.comment&&React.createElement("button",{onClick:function(){speakKorean(s.comment);},className:"ml-auto text-xl w-9 h-9 rounded-full bg-yellow-200 border-2 border-yellow-300 flex items-center justify-center hover:scale-110 active:scale-95 transition-all shrink-0",title:"코멘트 듣기"},"🔊")
+              );
+            })
+          )
+        ),
+        React.createElement("div",{className:"bg-white rounded-3xl p-5 shadow-xl border-4 border-pink-200 no-print"},
+          React.createElement("p",{className:"text-xl font-black text-gray-700 mb-3"},"🎵 내 녹음 다시 듣기"),
+          React.createElement("div",{className:"space-y-3"},
+            recordings.map(function(r,i){
+              return React.createElement("div",{key:i,className:"bg-pink-50 rounded-2xl p-3 border-2 border-pink-200"},
+                React.createElement("div",{className:"flex items-center gap-2 mb-2"},
+                  React.createElement("span",{className:"text-sm font-black text-pink-500"},i+1+"."),
+                  React.createElement("span",{className:"text-xl font-black text-pink-700"},r.word),
+                  React.createElement("button",{onClick:function(){speakKorean(r.word);},className:"text-lg w-8 h-8 rounded-full bg-yellow-200 border-2 border-yellow-300 flex items-center justify-center hover:scale-110 transition-all"},"🔊"),
+                  React.createElement("span",{className:"text-xs text-gray-400"},'→ "'+r.recognized+'"')
+                ),
+                r.audioUrl?React.createElement("audio",{controls:true,src:r.audioUrl,className:"w-full rounded-xl"}):React.createElement("p",{className:"text-sm text-gray-400"},"녹음 없음")
+              );
+            })
+          )
+        ),
+        React.createElement("div",{className:"flex gap-3 no-print"},
+          React.createElement("button",{onClick:onRestart,className:"flex-1 h-16 rounded-3xl bg-gradient-to-r from-yellow-400 to-orange-400 text-white text-xl font-black shadow-lg border-4 border-orange-400 hover:scale-105 active:scale-95 transition-all"},"🔄 다시 평가"),
+          React.createElement("button",{onClick:onExit,className:"flex-1 h-16 rounded-3xl bg-gradient-to-r from-purple-400 to-pink-400 text-white text-xl font-black shadow-lg border-4 border-pink-400 hover:scale-105 active:scale-95 transition-all"},"🏠 처음으로")
+        )
+      )
+    )
+  );
+}
+
+// ── ROOT ──────────────────────────────────────────────────────────────────────
+function PronunciationApp(){
+  var _sc=useState("menu"); var screen=_sc[0]; var setScreen=_sc[1];
+  var _sa=useState(null); var selectedAge=_sa[0]; var setSelectedAge=_sa[1];
+  var _ar=useState(false); var apiReady=_ar[0]; var setApiReady=_ar[1];
+  useEffect(function(){
+    loadApiKey().then(function(){setApiReady(!!GEMINI_API_KEY);});
+    window.speechSynthesis.getVoices();
+  },[]);
+  if(screen==="practice") return React.createElement(PracticeMode,{age:selectedAge,onExit:function(){setScreen("menu");}});
+  if(screen==="eval") return React.createElement(EvalMode,{age:selectedAge,onExit:function(){setScreen("menu");}});
+  return React.createElement(MainMenu,{apiReady:apiReady,onStart:function(age,mode){setSelectedAge(age);setScreen(mode==="practice"?"practice":"eval");}});
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(PronunciationApp));
+</script>
+</body>
+</html>
